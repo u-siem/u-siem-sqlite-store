@@ -1,5 +1,7 @@
 use chrono::{DateTime, TimeZone, Utc};
 use rusqlite::{params, Connection, Row};
+use usiem::utilities::http_utils::OK;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs;
@@ -10,7 +12,6 @@ use std::{mem, vec};
 use usiem::events::field::{SiemField, SiemIp};
 use usiem::events::schema::{FieldSchema, FieldType};
 use usiem::events::SiemLog;
-use std::borrow::Cow;
 
 pub struct SqliteProxy {
     storage_path: String,
@@ -113,12 +114,14 @@ impl SqliteProxy {
         {
             return Err("SQLinjection detected!");
         }
-        let column_names : Vec<&str> = self.schema.fields.iter().map(|(k,_)| *k).collect();
-        let query_names : String = column_names.join(",");
-        let new_query = format!("SELECT {} FROM log_table WHERE event_created >= {} AND event_created <= {} AND {} LIMIT {} OFFSET {}",query_names, query, from, to, limit, offset);
+        let column_names: Vec<&str> = self.schema.fields.iter().map(|(k, _)| *k).filter(|k| k != &"message" && k != &"origin" && k != &"event_received").collect();
+        let query_names: String = column_names.join("],[");
+        let new_query = format!("SELECT [message],[event_received],[origin],[{}] FROM log_table WHERE event_created >= {} AND event_created <= {} AND {} LIMIT {} OFFSET {}",query_names, from, to,query, limit, offset);
         // Create search plan
         let mut query_dbs = Vec::new();
+        println!("FROM {} TO {}", from, to);
         for cn_id in &self.existent_dbs {
+            println!("Existent_dbs {}", cn_id);
             if cn_id >= &from && cn_id <= &to {
                 query_dbs.push(cn_id);
             }
@@ -154,6 +157,7 @@ impl SqliteProxy {
                 for cn_id in query_dbs {
                     match guard.get_mut(cn_id) {
                         Some(con) => {
+                            println!("{}", new_query);
                             let stmt = con.prepare(&new_query);
                             let mut stmt = match stmt {
                                 Ok(stmt) => stmt,
@@ -161,18 +165,18 @@ impl SqliteProxy {
                             };
                             let mut rows = match stmt.query([]) {
                                 Ok(rows) => rows,
-                                Err(_) => return Err("Error querying sqlite")
-
-                            };                            
+                                Err(_) => return Err("Error querying sqlite"),
+                            };
+                            
                             while let Some(row) = rows.next().unwrap_or(None) {
                                 let ip_str: String = row.get(2).unwrap();
-                                    let log = SiemLog::new(
-                                        row.get(0).unwrap(),
-                                        row.get(1).unwrap(),
-                                        SiemIp::from_ip_str(&ip_str).unwrap(),
-                                    );
-                                    let log = sqlite_row_to_log(log, row, &column_names, &self.schema);
-                                    found_logs.push(log);
+                                let log = SiemLog::new(
+                                    row.get(0).unwrap(),
+                                    row.get(1).unwrap(),
+                                    SiemIp::from_ip_str(&ip_str).unwrap(),
+                                );
+                                let log = sqlite_row_to_log(log, row, &column_names, &self.schema);
+                                found_logs.push(log);
                             }
                         }
                         None => {}
@@ -181,6 +185,7 @@ impl SqliteProxy {
             }
             Err(_) => return Err("Cannot access sqlite db"),
         };
+        println!("Ok logs");
         Ok(found_logs)
     }
 
@@ -289,11 +294,12 @@ impl Clone for SqliteProxy {
 }
 
 pub fn from_1971_01_01(time: i64) -> i64 {
-    let d1 = chrono::Utc::now();
+    let d1 = chrono::Utc.ymd(1970, 1, 1).and_hms(0, 0, 0);
     let naive =
         chrono::NaiveDateTime::from_timestamp(time / 1000 as i64, ((time % 1000) * 1000) as u32);
+
     let d2: DateTime<Utc> = chrono::DateTime::from_utc(naive, Utc);
-    let duration = d1.signed_duration_since(d2);
+    let duration = d2.signed_duration_since(d1);
     duration.num_days()
 }
 
@@ -398,52 +404,82 @@ fn sqlite_row_to_log(
     column_names: &Vec<&str>,
     schema: &FieldSchema,
 ) -> SiemLog {
-    let mut pos = 0;
+    let mut pos = 3;
     for name in column_names {
         if name == &"event_created" {
             log.set_event_created(row.get(pos).unwrap());
         } else if name == &"event_received" {
         } else if name == &"category" {
             log.set_category(Cow::Owned(row.get(pos).unwrap()));
-        }else if name == &"service" {
+        } else if name == &"service" {
             log.set_service(Cow::Owned(row.get(pos).unwrap()));
-        }else if name == &"vendor" {
+        } else if name == &"vendor" {
             log.set_vendor(Cow::Owned(row.get(pos).unwrap()));
-        }else if name == &"tenant" {
+        } else if name == &"tenant" {
             log.set_tenant(Cow::Owned(row.get(pos).unwrap()));
-        }else if name == &"product" {
+        } else if name == &"product" {
             log.set_product(Cow::Owned(row.get(pos).unwrap()));
-        }else if name == &"tags" {
-            let tags : String = row.get(pos).unwrap();
+        } else if name == &"tags" {
+            let tags: String = row.get(pos).unwrap();
             let tags = tags.replace("{", "").replace("}", "");
             for tag in tags.split(",") {
                 log.add_tag(tag);
             }
-        }else{
+        } else if name == &"message" {
+        } else if name == &"origin" {
+        } else{
             match schema.get_field(name) {
-                Some(field) => {
-                    match field {
-                        FieldType::Date(_) => {
-                            log.add_field(name, SiemField::Date(row.get(pos).unwrap()));
-                        },
-                        FieldType::Decimal(_) => {
-                            log.add_field(name, SiemField::F64(row.get(pos).unwrap()));
-                        },
-                        FieldType::Ip(_) => {
-                            let val : String = row.get(pos).unwrap();
-                            log.add_field(name, SiemField::IP(SiemIp::from_ip_str(&val).unwrap()));
-                        },
-                        FieldType::Numeric(_) => {
-                            log.add_field(name, SiemField::I64(row.get(pos).unwrap()));
-                        },
-                        FieldType::Text(_) => {
-                            log.add_field(name, SiemField::Text(Cow::Owned(row.get(pos).unwrap())));
-                        },
-                        FieldType::TextOptions(_,_) => {
-                            log.add_field(name, SiemField::Text(Cow::Owned(row.get(pos).unwrap())));
-                        },
-                        _ => {}
+                Some(field) => match field {
+                    FieldType::Date(_) => {
+                        match row.get(pos) {
+                            Ok(val) => {
+                                log.add_field(name, SiemField::Date(val));
+                            },
+                            Err(_) => {}
+                        };
                     }
+                    FieldType::Decimal(_) => {
+                        match row.get(pos) {
+                            Ok(val) => {
+                                log.add_field(name, SiemField::F64(val));
+                            },
+                            Err(_) => {}
+                        };
+                    }
+                    FieldType::Ip(_) => {
+                        match row.get(pos) {
+                            Ok(val ) => {
+                                let val : String = val;
+                                log.add_field(name, SiemField::IP(SiemIp::from_ip_str(&val).unwrap()));
+                            },
+                            Err(_) => {}
+                        };
+                    }
+                    FieldType::Numeric(_) => {
+                        match row.get(pos) {
+                            Ok(val) => {
+                                log.add_field(name, SiemField::I64(val));
+                            },
+                            Err(_) => {}
+                        };
+                    }
+                    FieldType::Text(_) => {
+                        match row.get(pos) {
+                            Ok(val) => {
+                                log.add_field(name, SiemField::Text(Cow::Owned(val)));
+                            },
+                            Err(_) => {}
+                        };
+                    }
+                    FieldType::TextOptions(_, _) => {
+                        match row.get(pos) {
+                            Ok(val) => {
+                                log.add_field(name, SiemField::Text(Cow::Owned(val)));
+                            },
+                            Err(_) => {}
+                        };
+                    },
+                    _ => {}
                 },
                 None => {}
             }
@@ -504,12 +540,8 @@ fn setup_schema(conn: &mut Connection, schema: &FieldSchema) {
                 ));
             }
             FieldType::Text(_) => {
+                // Text must not be indexed, only TextOptions
                 statement.push_str(&format!("[{}] TEXT,", field));
-                index_statement.push_str(&format!(
-                    "CREATE INDEX IF NOT EXISTS idx_{} ON log_table ([{}]);",
-                    field.replace(".", "_"),
-                    field
-                ));
             }
             FieldType::Numeric(_) => {
                 statement.push_str(&format!("[{}] NUMERIC,", field));
@@ -541,7 +573,7 @@ fn setup_schema(conn: &mut Connection, schema: &FieldSchema) {
     statement.remove(statement.len() - 1);
     statement.push_str(");");
     statement.push_str(&index_statement);
-    match conn.execute(&statement, params![]) {
+    match conn.execute_batch(&statement) {
         Ok(_) => return,
         Err(e) => {
             println!("Error setting up schema {:?}", e);

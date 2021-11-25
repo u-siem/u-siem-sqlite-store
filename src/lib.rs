@@ -76,7 +76,8 @@ impl SiemComponent for SqliteDatastore {
                                 Ok(res) => {
                                     SiemMessage::Response(comm_id, SiemFunctionResponse::LOG_QUERY_RANGE(String::new(),0,0,Ok(res)))
                                 },
-                                Err(_) => {
+                                Err(e) => {
+                                    println!("{}",e);
                                     SiemMessage::Response(comm_id, SiemFunctionResponse::LOG_QUERY_RANGE(String::new(),0,0,Err(CommandError::SyntaxError(Cow::Borrowed("Query error")))))
                                 }
                             };
@@ -110,7 +111,7 @@ impl SiemComponent for SqliteDatastore {
             if now > last_commit + self.commit_time || log_size > self.commit_size {
                 self.connections.commit();
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
@@ -294,7 +295,7 @@ mod tests {
                 println!("PUSHED {} logs", i);
             }
         }
-        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::thread::sleep(std::time::Duration::from_secs(6));
         let _ = local_chan.send(SiemMessage::Command(
             1,
             1,
@@ -310,6 +311,9 @@ mod tests {
                             SiemFunctionResponse::LOG_QUERY_RANGE(name, from, to, data) => {
                                 match data {
                                     Ok(logs) => {
+                                        if logs.len() == 0 {
+                                            panic!("No logs returned");
+                                        }
                                         for log in logs {
                                             assert_eq!(log.message(), "This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333");
                                         }

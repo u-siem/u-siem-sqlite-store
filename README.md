@@ -6,7 +6,8 @@ uSiem component that stores events in a sqlite database.
 ### Real numbers
 
 Log indexing is fast enough for most use cases, being around 5000 logs/sec in debug mode.
-A total of 1 million logs with 52 columns with an index per column has a size of 293.3 MB.
+A total of 1 million logs with 52 columns without indexes has a size of 293.3 MB.
+A total of 1 million logs with 52 columns with an index per column (non text columns) has a size of 517.2 MB.
 
 ### Indexing example
 
