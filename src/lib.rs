@@ -284,7 +284,7 @@ mod tests {
 
         std::thread::spawn(move || comp.run());
 
-        for i in 1..12_000 {
+        for _i in 1..12_000 {
             let mut log = SiemLog::new("This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333", chrono::Utc::now().timestamp_millis(), "localhost");
             log.set_category(Cow::Borrowed("Authentication"));
             log.set_product(Cow::Borrowed("MagicDevice001"));

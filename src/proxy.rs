@@ -321,7 +321,7 @@ impl SqliteProxy {
                 )?;
                 Ok(new_query)
             }
-            Err(e) => {
+            Err(_e) => {
                 Err(rusqlite::Error::InvalidParameterName(String::from(
                     "PoisonError",
                 )))
