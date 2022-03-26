@@ -7,7 +7,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::sync::{Arc, Mutex};
 use std::{mem, vec};
-use usiem::components::common::QueryInfo;
+use usiem::components::command::QueryInfo;
 use usiem::events::field::{SiemField, SiemIp};
 use usiem::events::schema::{FieldSchema, FieldType};
 use usiem::events::SiemLog;
@@ -67,7 +67,6 @@ impl SqliteProxy {
             .expect("Cannot create QueryDB connection");
         let _ = setup_query_store(&mut saved_queries);
         // Initialize old dbs
-        println!("DDBBs: {:?}", existent_dbs);
         let mut db = SqliteProxy {
             logs: BTreeMap::new(),
             connections: Arc::from(Mutex::from(BTreeMap::new())),
@@ -92,7 +91,6 @@ impl SqliteProxy {
                             Err(_) => return,
                             Ok(cn) => cn,
                         };
-                    println!("Loaded db {}", cn_id);
                     setup_schema(&mut new_con, &self.schema);
                     guard.insert(*cn_id, new_con);
                 }
@@ -108,7 +106,6 @@ impl SqliteProxy {
                         Err(_) => return,
                         Ok(cn) => cn,
                     };
-                println!("Loaded db {}", cn_id);
                 setup_schema(&mut new_con, &self.schema);
                 guard.insert(cn_id, new_con);
             }
@@ -145,9 +142,7 @@ impl SqliteProxy {
         let new_query = format!("SELECT [message],[event_received],[origin],[{}] FROM log_table WHERE event_created >= {} AND event_created <= {} AND {} LIMIT {} OFFSET {}",query_names, from, to,query, limit, offset);
         // Create search plan
         let mut query_dbs = Vec::new();
-        println!("FROM {} TO {}", from, to);
         for cn_id in &self.existent_dbs {
-            println!("Existent_dbs {}", cn_id);
             if cn_id >= &from && cn_id <= &to {
                 query_dbs.push(cn_id);
             }
@@ -165,7 +160,6 @@ impl SqliteProxy {
                                 "{}/logs_{}.db",
                                 &self.storage_path, cn_id
                             ))?;
-                            println!("Loaded db {}", cn_id);
                             setup_schema(&mut new_con, &self.schema);
                             guard.insert(**cn_id, new_con);
                         }
@@ -185,10 +179,12 @@ impl SqliteProxy {
 
                             while let Some(row) = rows.next().unwrap_or(None) {
                                 let ip_str: String = row.get(2).unwrap();
+                                let received :i64 = row.get(1).unwrap();
+                                let msg : String = row.get(0).unwrap();
                                 let log = SiemLog::new(
-                                    row.get(0).unwrap(),
-                                    row.get(1).unwrap(),
-                                    SiemIp::from_ip_str(&ip_str).unwrap(),
+                                    msg,
+                                    received,
+                                    ip_str
                                 );
                                 let log = sqlite_row_to_log(log, row, &column_names, &self.schema)?;
                                 found_logs.push(log);
@@ -200,7 +196,6 @@ impl SqliteProxy {
             }
             Err(_) => return Err(rusqlite::Error::InvalidQuery),
         };
-        println!("Ok logs");
         Ok(found_logs)
     }
 
@@ -327,7 +322,6 @@ impl SqliteProxy {
                 Ok(new_query)
             }
             Err(e) => {
-                println!("{:?}", e);
                 Err(rusqlite::Error::InvalidParameterName(String::from(
                     "PoisonError",
                 )))
@@ -346,7 +340,6 @@ impl SqliteProxy {
         let mut query_info = query_info.clone();
         query_info.query = String::new();
         let search_query = Self::search_query_from_info(&self.schema, &query_info);
-        println!("{}",search_query);
         match self.saved_queries.lock() {
             Ok(mut saved_query_guard) => {
                 let transaction = saved_query_guard.transaction()?;
@@ -713,13 +706,11 @@ impl SqliteProxy {
                                 Err(_) => return,
                                 Ok(cn) => cn,
                             };
-                            println!("Instantiated db {}", cn_id);
                             let optimize_db = !self.existent_dbs.contains(&cn_id);
                             self.existent_dbs.insert(cn_id);
                             setup_schema(&mut new_con, &self.schema);
                             // Performance tunning with pragma
                             if optimize_db {
-                                println!("Optimizing SQLite DB...");
                                 let _ = new_con.pragma_update(None, &"journal_mode", &"WAL");
                                 let _ = new_con.pragma_update(None, &"synchronous", &"normal");
                                 let _ = new_con.pragma_update(None, &"temp_store", &"memory");
@@ -739,7 +730,6 @@ impl SqliteProxy {
                                         "log_table",
                                     ) {
                                         Ok(()) => {
-                                            println!("Inserted {} logs", logs.len());
                                             *last_update = now;
                                             *logs = Vec::with_capacity(1024);
                                         }
@@ -1088,12 +1078,18 @@ fn sqlite_row_to_fields(
                 }
                 FieldType::Ip(_) => {
                     match row.get(pos) {
-                        Ok(val) => {
+                        Ok(val ) => {
+                            
                             let val: String = val;
-                            to_ret.insert(
-                                name.to_string(),
-                                SiemField::IP(SiemIp::from_ip_str(&val).unwrap()),
-                            );
+                            match SiemIp::from_ip_str(&val) {
+                                Ok(v) => {
+                                    to_ret.insert(
+                                        name.to_string(),
+                                        SiemField::IP(v),
+                                    );
+                                },
+                                Err(_) => {}
+                            }
                         }
                         Err(_) => {}
                     };

@@ -1,9 +1,9 @@
 use crossbeam_channel::{Receiver, Sender, TryRecvError};
 use std::borrow::Cow;
-use usiem::components::common::{
-    CommandDefinition, CommandError, SiemCommandCall, SiemCommandResponse,
-    SiemComponentCapabilities, SiemFunctionType, SiemMessage, UserRole,
+use usiem::components::command::{
+    CommandDefinition, CommandError, SiemCommandCall, SiemCommandResponse, SiemFunctionType,
 };
+use usiem::components::common::{SiemComponentCapabilities, SiemMessage, UserRole};
 use usiem::components::SiemComponent;
 use usiem::events::schema::FieldSchema;
 use usiem::events::SiemLog;
@@ -25,7 +25,7 @@ pub struct SqliteDatastore {
     schema: FieldSchema,
     id: u64,
     store_location: String,
-    sqlite_options : SqliteProxyOptions,
+    sqlite_options: SqliteProxyOptions,
     connections: SqliteProxy,
 }
 
@@ -65,7 +65,6 @@ impl SiemComponent for SqliteDatastore {
                                 let exit = self.connections.close();
                                 count += 1;
                                 if exit {
-                                    println!("DB Closed!");
                                     return;
                                 }
                                 if count > 5 {
@@ -164,15 +163,16 @@ impl SiemComponent for SqliteDatastore {
                     },
                 }
             }
-            if now > last_commit + self.sqlite_options.commit_time || log_size > self.sqlite_options.commit_size {
+            if now > last_commit + self.sqlite_options.commit_time
+                || log_size > self.sqlite_options.commit_size
+            {
                 self.connections.commit();
                 last_commit = now;
             }
             match self.connections.continue_queries() {
-                Ok(_)=> {},
+                Ok(_) => {}
                 Err(e) => {
-                    println!("Error");
-                    panic!("{:?}",e.to_string())
+                    panic!("{:?}", e.to_string())
                 }
             }
         }
@@ -215,6 +215,7 @@ impl SiemComponent for SqliteDatastore {
             datasets,
             commands,
             vec![],
+            vec![]
         )
     }
 
@@ -242,19 +243,11 @@ impl SiemComponent for SqliteDatastore {
 }
 
 impl SqliteDatastore {
-    pub fn new(
-        schema: FieldSchema,
-        store_location: String,
-        options: SqliteProxyOptions
-    ) -> Self {
+    pub fn new(schema: FieldSchema, store_location: String, options: SqliteProxyOptions) -> Self {
         let (local_chnl_snd, local_chnl_rcv) = crossbeam_channel::bounded(1000);
         let (local_chnl_log_snd, local_chnl_log_rcv) = crossbeam_channel::bounded(1000);
         let (kernel_sender, _) = crossbeam_channel::bounded(1);
-        let proxy = SqliteProxy::new(
-            options.clone(),
-            schema.clone(),
-            store_location.clone(),
-        );
+        let proxy = SqliteProxy::new(options.clone(), schema.clone(), store_location.clone());
         SqliteDatastore {
             kernel_sender,
             local_chnl_snd,
@@ -265,7 +258,7 @@ impl SqliteDatastore {
             id: 0,
             schema: schema,
             storage: None,
-            sqlite_options : options,
+            sqlite_options: options,
             connections: proxy,
         }
     }
@@ -274,14 +267,17 @@ impl SqliteDatastore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use usiem::components::common::{SiemCommandHeader, QueryInfo};
+    use usiem::components::command::{QueryInfo, SiemCommandHeader};
     use usiem::events::auth::{AuthEvent, AuthLoginType, LoginOutcome, RemoteLogin};
-    use usiem::events::field::SiemIp;
     use usiem::events::{get_default_schema, SiemEvent};
 
     #[test]
     fn test_sqlite_log_ingestion() {
-        let mut comp = SqliteDatastore::new(get_default_schema(), ".".to_string(), SqliteProxyOptions::default());
+        let mut comp = SqliteDatastore::new(
+            get_default_schema(),
+            ".".to_string(),
+            SqliteProxyOptions::default(),
+        );
         let local_chan = comp.local_channel();
         let (local_chnl_log_snd, local_chnl_log_rcv) = crossbeam_channel::bounded(5000);
         comp.set_log_channel(local_chnl_log_snd.clone(), local_chnl_log_rcv.clone());
@@ -289,7 +285,7 @@ mod tests {
         std::thread::spawn(move || comp.run());
 
         for i in 1..12_000 {
-            let mut log = SiemLog::new(String::from("This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333"), chrono::Utc::now().timestamp_millis(), SiemIp::V4(0));
+            let mut log = SiemLog::new("This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333", chrono::Utc::now().timestamp_millis(), "localhost");
             log.set_category(Cow::Borrowed("Authentication"));
             log.set_product(Cow::Borrowed("MagicDevice001"));
             log.set_tenant(Cow::Borrowed("Default"));
@@ -305,24 +301,29 @@ mod tests {
                 }),
             }));
             let _ = local_chnl_log_snd.send(log);
-            if i % 10_000 == 0 {
-                println!("PUSHED {} logs", i);
-            }
         }
         std::thread::sleep(std::time::Duration::from_secs(10));
         let _ = local_chan.send(SiemMessage::Command(
             SiemCommandHeader {
-                user : String::from("None"),
-                comp_id : 0,
-                comm_id: 0
+                user: String::from("None"),
+                comp_id: 0,
+                comm_id: 0,
             },
-            SiemCommandCall::STOP_COMPONENT(Cow::Borrowed("Stop!!")),
+            SiemCommandCall::STOP_COMPONENT("Stop!!".to_string()),
         ));
     }
 
     #[test]
     fn test_sqlite_with_query() {
-        let mut comp = SqliteDatastore::new(get_default_schema(), ".".to_string(), SqliteProxyOptions {commit_size : 10_000, commit_time : 5_000, mmap_size : 32_000_000});
+        let mut comp = SqliteDatastore::new(
+            get_default_schema(),
+            ".".to_string(),
+            SqliteProxyOptions {
+                commit_size: 10_000,
+                commit_time: 5_000,
+                mmap_size: 32_000_000,
+            },
+        );
         let local_chan = comp.local_channel();
         let (local_chnl_log_snd, local_chnl_log_rcv) = crossbeam_channel::bounded(50_000);
         let (kernel_snd, kernel_rcv) = crossbeam_channel::bounded(5000);
@@ -332,7 +333,7 @@ mod tests {
         std::thread::spawn(move || comp.run());
 
         for i in 1..100_000 {
-            let mut log = SiemLog::new(String::from("This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333"), i, SiemIp::V4(0));
+            let mut log = SiemLog::new("This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333", i, "localhost");
             log.set_category(Cow::Borrowed("Authentication"));
             log.set_product(Cow::Borrowed("MagicDevice001"));
             log.set_tenant(Cow::Borrowed("Default"));
@@ -349,29 +350,26 @@ mod tests {
                 }),
             }));
             let _ = local_chnl_log_snd.send(log);
-            if i % 10_000 == 0 {
-                println!("PUSHED {} logs", i);
-            }
         }
         std::thread::sleep(std::time::Duration::from_secs(6));
         let ttl = chrono::Utc::now().timestamp_millis() + 100_000;
         let _ = local_chan.send(SiemMessage::Command(
             SiemCommandHeader {
-                user : String::from("None"),
-                comm_id : 1,
-                comp_id : 1
+                user: String::from("None"),
+                comm_id: 1,
+                comp_id: 1,
             },
-            SiemCommandCall::LOG_QUERY(QueryInfo{
-                user : String::from("None"),
-                is_native : true,
-                query_id : None,
-                from : 0,
-                to : 1000,
-                limit : 10_000,
-                offset : 0,
+            SiemCommandCall::LOG_QUERY(QueryInfo {
+                user: String::from("None"),
+                is_native: true,
+                query_id: None,
+                from: 0,
+                to: 1000,
+                limit: 10_000,
+                offset: 0,
                 ttl,
-                query : "category='Authentication'".to_string(),
-                fields : vec![]
+                query: "category='Authentication'".to_string(),
+                fields: vec![],
             }),
         ));
         std::thread::sleep(std::time::Duration::from_secs(2));
@@ -383,7 +381,7 @@ mod tests {
                         match resp {
                             // Todo: improve in the CORE Package...
                             SiemCommandResponse::LOG_QUERY(query, res) => {
-                                println!("{:?}",query.query);
+                                println!("{:?}", query.query);
                                 query_id = query.query_id.unwrap_or(String::new());
                                 match res {
                                     Ok(logs) => {
@@ -392,7 +390,7 @@ mod tests {
                                         }
                                     }
                                     Err(e) => {
-                                        println!("{:?}",e);
+                                        println!("{:?}", e);
                                         panic!("Not expected response");
                                     }
                                 }
@@ -408,28 +406,28 @@ mod tests {
                 }
             }
             Err(e) => {
-                panic!("{:?}",e);
+                panic!("{:?}", e);
             }
         }
         std::thread::sleep(std::time::Duration::from_secs(2));
         let ttl = chrono::Utc::now().timestamp_millis() + 10_000;
         let _ = local_chan.send(SiemMessage::Command(
             SiemCommandHeader {
-                user : String::from("None"),
-                comm_id : 1,
-                comp_id : 1
+                user: String::from("None"),
+                comm_id: 1,
+                comp_id: 1,
             },
-            SiemCommandCall::LOG_QUERY(QueryInfo{
-                user : String::from("None"),
-                is_native : true,
-                query_id : Some(query_id),
-                from : 0,
-                to : 1000,
-                limit : 100000,
-                offset : 0,
+            SiemCommandCall::LOG_QUERY(QueryInfo {
+                user: String::from("None"),
+                is_native: true,
+                query_id: Some(query_id),
+                from: 0,
+                to: 1000,
+                limit: 100000,
+                offset: 0,
                 ttl,
-                query : "category='Authentication'".to_string(),
-                fields : vec![]
+                query: "category='Authentication'".to_string(),
+                fields: vec![],
             }),
         ));
         std::thread::sleep(std::time::Duration::from_secs(4));
@@ -439,23 +437,21 @@ mod tests {
                     SiemMessage::Response(_, resp) => {
                         match resp {
                             // Todo: improve in the CORE Package...
-                            SiemCommandResponse::LOG_QUERY(_query_info, res) => {
-                                match res {
-                                    Ok(logs) => {
-                                        if logs.len() == 0 {
-                                            panic!("No logs returned");
-                                        }
-                                        println!("Returned logs: {}", logs.len());
-                                        for log in logs {
-                                            assert_eq!(log.get("message").unwrap().to_string(), "This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333");
-                                        }
+                            SiemCommandResponse::LOG_QUERY(_query_info, res) => match res {
+                                Ok(logs) => {
+                                    if logs.len() == 0 {
+                                        panic!("No logs returned");
                                     }
-                                    Err(e) => {
-                                        println!("{:?}",e);
-                                        panic!("Not expected response");
+                                    println!("Returned logs: {}", logs.len());
+                                    for log in logs {
+                                        assert_eq!(log.get("message").unwrap().to_string(), "This is a log example ..............111111111111111111111111222222222222222222222223333333333333333333333");
                                     }
                                 }
-                            }
+                                Err(e) => {
+                                    println!("{:?}", e);
+                                    panic!("Not expected response");
+                                }
+                            },
                             _ => {
                                 panic!("Not expected response");
                             }
@@ -473,11 +469,11 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_secs(2));
         let _ = local_chan.send(SiemMessage::Command(
             SiemCommandHeader {
-                user : String::from("None"),
-                comm_id : 0,
-                comp_id : 0
+                user: String::from("None"),
+                comm_id: 0,
+                comp_id: 0,
             },
-            SiemCommandCall::STOP_COMPONENT(Cow::Borrowed("Stop!!")),
+            SiemCommandCall::STOP_COMPONENT("Stop!!".to_string()),
         ));
     }
 }

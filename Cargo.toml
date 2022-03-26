@@ -1,6 +1,6 @@
 [package]
 name = "u-siem-sqlite-store"
-version = "0.0.2"
+version = "0.0.3"
 authors = ["Samuel Garcés <samuel.garces@protonmail.com>"]
 license = "MIT"
 description = "Library to be used to build a custom SIEM with the framework uSIEM"
