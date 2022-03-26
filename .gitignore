@@ -11,3 +11,5 @@ Cargo.lock
 
 # test files
 *.db
+*.db-shm
+*.db-wal

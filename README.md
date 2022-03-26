@@ -68,6 +68,6 @@ std::thread::sleep(std::time::Duration::from_secs(10));
 let _ = local_chan.send(SiemMessage::Command(
     1,
     1,
-    SiemFunctionCall::STOP_COMPONENT(Cow::Borrowed("Stop!!")),
+    SiemCommandCall::STOP_COMPONENT(Cow::Borrowed("Stop!!")),
 ));
 ```
